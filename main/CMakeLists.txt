@@ -1,4 +1,3 @@
-
 if (NOT FREERTOS_KERNEL_PATH AND NOT DEFINED ENV{FREERTOS_KERNEL_PATH})
     message("Skipping FreeRTOS examples as FREERTOS_KERNEL_PATH not defined")
     return()
@@ -9,6 +8,7 @@ include(FreeRTOS_Kernel_import.cmake)
 # Example running FreeRTOS on 1 core
 add_executable(pico_emb
     main.c
+    hc06.c
     )
 
 target_include_directories(pico_emb PRIVATE
@@ -19,6 +19,7 @@ target_include_directories(pico_emb PRIVATE
 target_link_libraries(pico_emb PRIVATE
     pico_async_context_freertos
     FreeRTOS-Kernel-Heap4
+    hardware_i2c
     pico_stdlib
     )
 # Set the nunber of cores to 1.
