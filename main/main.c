@@ -29,9 +29,21 @@
 #define JOYSTICK_OUT_MAX 127
 #define JOYSTICK_FILTER_N 5
 
+#define LED_R_PIN 12
+#define LED_G_PIN 13
+#define LED_B_PIN 14
+#define COLOR_DEADZONE 150
+
+typedef struct {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+} rgb_t;
+
 QueueHandle_t xQueueRX;
 QueueHandle_t xQueueTX;
 QueueHandle_t xQueuePin;
+QueueHandle_t xQueueColor;
 
 static ssd1306_t g_disp;
 
@@ -183,6 +195,29 @@ static void joystick_send_axis(uint8_t axis, int16_t value) {
     }
 }
 
+static void joystick_compute_color(uint16_t avg_x, uint16_t avg_y, rgb_t *out) {
+    int dx = (int)avg_x - 2048;
+    int dy = (int)avg_y - 2048;
+
+    if (dx > -COLOR_DEADZONE && dx < COLOR_DEADZONE) dx = 0;
+    if (dy > -COLOR_DEADZONE && dy < COLOR_DEADZONE) dy = 0;
+
+    int adx = dx < 0 ? -dx : dx;
+    int ady = dy < 0 ? -dy : dy;
+
+    int r = (dy > 0) ? (ady * 255) / 2048 : 0;
+    int g = (dy < 0) ? (ady * 255) / 2048 : 0;
+    int b = (adx * 255) / 2048;
+
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
+
+    out->r = (uint8_t)r;
+    out->g = (uint8_t)g;
+    out->b = (uint8_t)b;
+}
+
 static int16_t joystick_process(uint16_t raw) {
     int delta = (int)raw - 2048;
     if (delta > -JOYSTICK_DEADZONE && delta < JOYSTICK_DEADZONE) {
@@ -229,7 +264,45 @@ static void joystick_task(void* p) {
         if (vx != 0) joystick_send_axis(0, vx);
         if (vy != 0) joystick_send_axis(1, vy);
 
+        rgb_t color;
+        joystick_compute_color(avg_x, avg_y, &color);
+        xQueueOverwrite(xQueueColor, &color);
+
         vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+static void rgb_task(void* p) {
+    gpio_set_function(LED_R_PIN, GPIO_FUNC_PWM);
+    gpio_set_function(LED_G_PIN, GPIO_FUNC_PWM);
+    gpio_set_function(LED_B_PIN, GPIO_FUNC_PWM);
+
+    uint slice_r = pwm_gpio_to_slice_num(LED_R_PIN);
+    uint chan_r  = pwm_gpio_to_channel(LED_R_PIN);
+    uint slice_g = pwm_gpio_to_slice_num(LED_G_PIN);
+    uint chan_g  = pwm_gpio_to_channel(LED_G_PIN);
+    uint slice_b = pwm_gpio_to_slice_num(LED_B_PIN);
+    uint chan_b  = pwm_gpio_to_channel(LED_B_PIN);
+
+    pwm_config cfg = pwm_get_default_config();
+    pwm_config_set_clkdiv(&cfg, 4.0f);
+    pwm_config_set_wrap(&cfg, 255);
+
+    pwm_init(slice_r, &cfg, true);
+    if (slice_g != slice_r)                       pwm_init(slice_g, &cfg, true);
+    if (slice_b != slice_r && slice_b != slice_g) pwm_init(slice_b, &cfg, true);
+
+    pwm_set_chan_level(slice_r, chan_r, 0);
+    pwm_set_chan_level(slice_g, chan_g, 0);
+    pwm_set_chan_level(slice_b, chan_b, 0);
+
+    rgb_t color = {0};
+    while (true) {
+        if (xQueueReceive(xQueueColor, &color, portMAX_DELAY) == pdTRUE) {
+            pwm_set_chan_level(slice_r, chan_r, color.r);
+            pwm_set_chan_level(slice_g, chan_g, color.g);
+            pwm_set_chan_level(slice_b, chan_b, color.b);
+        }
     }
 }
 
@@ -270,6 +343,7 @@ int main(void) {
     xQueueRX = xQueueCreate(256, sizeof(uint8_t));
     xQueueTX = xQueueCreate(256, sizeof(uint8_t));
     xQueuePin = xQueueCreate(1, 5 * sizeof(char));
+    xQueueColor = xQueueCreate(1, sizeof(rgb_t));
 
     xTaskCreate(tx_task, "TX", 512, NULL, 2, NULL);
     xTaskCreate(serial_task, "Serial", 1024, NULL, 1, NULL);
@@ -277,6 +351,7 @@ int main(void) {
     xTaskCreate(button_task, "BTN", 512, NULL, 1, NULL);
     xTaskCreate(oled_task, "OLED", 1024, NULL, 1, NULL);
     xTaskCreate(joystick_task, "JOY", 512, NULL, 1, NULL);
+    xTaskCreate(rgb_task, "RGB", 256, NULL, 1, NULL);
 
     vTaskStartScheduler();
     while (true);
